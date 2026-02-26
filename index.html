@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>臨床研究推進ナレッジシステム｜北里大学病院</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Noto Sans JP', sans-serif; background: #f1f5f9; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #f1f5f9; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  input, select, textarea, button { font-family: inherit; }
+  .nav-btn { transition: background 0.15s, color 0.15s; }
+  .nav-btn:hover { background: #1e293b !important; color: #e2e8f0 !important; }
+  .card-hover { transition: box-shadow 0.2s, transform 0.15s; }
+  .card-hover:hover { box-shadow: 0 6px 20px rgba(0,0,0,0.12) !important; transform: translateY(-1px); }
+  .btn-hover { transition: opacity 0.15s, transform 0.1s; }
+  .btn-hover:hover { opacity: 0.85; transform: scale(0.98); }
+  @media (max-width: 768px) {
+    .sidebar { width: 60px !important; }
+    .sidebar .nav-label { display: none; }
+    .main-content { margin-left: 60px !important; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ===== CONFIG KEY (localStorage でGAS URLを保存) =====
+const GAS_URL_KEY = 'kitasato_gas_url';
+
+// ===== API LAYER =====
+async function apiGet(gasUrl) {
+  const res = await fetch(gasUrl, { redirect: 'follow' });
+  if (!res.ok) throw new Error('取得失敗: ' + res.status);
+  return res.json();
+}
+
+async function apiPost(gasUrl, action, data) {
+  const res = await fetch(gasUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ action, data }),
+    redirect: 'follow'
+  });
+  if (!res.ok) throw new Error('保存失敗: ' + res.status);
+  return res.json();
+}
+
+// ===== COLOR MAPS =====
+const STATUS_COLOR = {
+  '進行中': { bg:'#dbeafe', text:'#1d4ed8', dot:'#3b82f6' },
+  '完了':   { bg:'#dcfce7', text:'#166534', dot:'#22c55e' },
+  '停止中': { bg:'#fef9c3', text:'#854d0e', dot:'#eab308' },
+  '準備中': { bg:'#f3e8ff', text:'#6b21a8', dot:'#a855f7' },
+};
+const TASK_STATUS_COLOR = {
+  '完了':   { bg:'#dcfce7', text:'#166534' },
+  '進行中': { bg:'#dbeafe', text:'#1d4ed8' },
+  '未着手': { bg:'#f1f5f9', text:'#475569' },
+  '遅延':   { bg:'#fee2e2', text:'#991b1b' },
+};
+const CATEGORY_COLOR = {
+  'データ管理':'#6366f1','モニタリング':'#0ea5e9','統計':'#8b5cf6',
+  '事務':'#f59e0b','PM':'#10b981','DM':'#06b6d4','その他':'#94a3b8',
+};
+const PHASE_COLOR = {
+  '第I相':'#ef4444','第II相':'#f97316','第III相':'#eab308',
+  '観察研究':'#22c55e','医師主導':'#3b82f6',
+};
+
+// ===== SMALL COMPONENTS =====
+const StatusBadge = ({ status }) => {
+  const c = STATUS_COLOR[status] || { bg:'#f1f5f9', text:'#475569', dot:'#94a3b8' };
+  return <span style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'3px 10px', borderRadius:20, background:c.bg, color:c.text, fontSize:12, fontWeight:700 }}>
+    <span style={{ width:6, height:6, borderRadius:'50%', background:c.dot, display:'inline-block' }} />
+    {status}
+  </span>;
+};
+
+const ProgressBar = ({ value, color='#3b82f6' }) => (
+  <div style={{ width:'100%', height:8, background:'#e2e8f0', borderRadius:4, overflow:'hidden' }}>
+    <div style={{ width:`${value}%`, height:'100%', background:color, borderRadius:4, transition:'width 0.5s ease' }} />
+  </div>
+);
+
+const Card = ({ children, style={} }) => (
+  <div style={{ background:'#fff', borderRadius:12, padding:20, border:'1px solid #e2e8f0', boxShadow:'0 1px 4px rgba(0,0,0,0.05)', ...style }}>
+    {children}
+  </div>
+);
+
+const Modal = ({ title, onClose, children, wide }) => (
+  <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000, padding:20 }}
+    onClick={e => e.target===e.currentTarget && onClose()}>
+    <div style={{ background:'#fff', borderRadius:16, padding:28, width:'100%', maxWidth:wide?740:520, maxHeight:'88vh', overflow:'auto', boxShadow:'0 24px 64px rgba(0,0,0,0.25)' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+        <h3 style={{ margin:0, fontSize:18, fontWeight:800, color:'#1e293b' }}>{title}</h3>
+        <button onClick={onClose} style={{ border:'none', background:'#f1f5f9', borderRadius:8, width:32, height:32, cursor:'pointer', fontSize:18, color:'#64748b', lineHeight:1 }}>×</button>
+      </div>
+      {children}
+    </div>
+  </div>
+);
+
+const Input = ({ label, value, onChange, type='text', placeholder, required, disabled }) => (
+  <div style={{ marginBottom:14 }}>
+    {label && <label style={{ display:'block', fontSize:13, fontWeight:600, color:'#374151', marginBottom:4 }}>{label}{required && <span style={{ color:'#ef4444' }}>*</span>}</label>}
+    <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+      required={required} disabled={disabled}
+      style={{ width:'100%', padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:14, outline:'none', boxSizing:'border-box', background:disabled?'#f9fafb':'#fff' }} />
+  </div>
+);
+
+const Select = ({ label, value, onChange, options, required }) => (
+  <div style={{ marginBottom:14 }}>
+    {label && <label style={{ display:'block', fontSize:13, fontWeight:600, color:'#374151', marginBottom:4 }}>{label}{required && <span style={{ color:'#ef4444' }}>*</span>}</label>}
+    <select value={value} onChange={e=>onChange(e.target.value)} required={required}
+      style={{ width:'100%', padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:14, outline:'none', background:'#fff', boxSizing:'border-box' }}>
+      {options.map(o=><option key={o} value={o}>{o}</option>)}
+    </select>
+  </div>
+);
+
+const Textarea = ({ label, value, onChange, rows=5, placeholder }) => (
+  <div style={{ marginBottom:14 }}>
+    {label && <label style={{ display:'block', fontSize:13, fontWeight:600, color:'#374151', marginBottom:4 }}>{label}</label>}
+    <textarea value={value} onChange={e=>onChange(e.target.value)} rows={rows} placeholder={placeholder}
+      style={{ width:'100%', padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:13, outline:'none', resize:'vertical', boxSizing:'border-box', fontFamily:'inherit', lineHeight:1.6 }} />
+  </div>
+);
+
+const Btn = ({ onClick, children, variant='primary', small, type='button', disabled }) => {
+  const styles = {
+    primary:   { background:'#2563eb', color:'#fff', border:'none' },
+    secondary: { background:'#f1f5f9', color:'#374151', border:'1px solid #e2e8f0' },
+    danger:    { background:'#fee2e2', color:'#dc2626', border:'none' },
+    success:   { background:'#dcfce7', color:'#166534', border:'none' },
+    warning:   { background:'#fef9c3', color:'#854d0e', border:'none' },
+  };
+  return (
+    <button type={type} onClick={onClick} disabled={disabled} className="btn-hover"
+      style={{ ...styles[variant], borderRadius:8, padding:small?'6px 14px':'9px 18px',
+        fontSize:small?12:14, fontWeight:600, cursor:disabled?'not-allowed':'pointer',
+        display:'inline-flex', alignItems:'center', gap:6, opacity:disabled?0.6:1 }}>
+      {children}
+    </button>
+  );
+};
+
+const Toast = ({ msg, type, onClose }) => {
+  useEffect(() => { const t = setTimeout(onClose, 3000); return ()=>clearTimeout(t); }, []);
+  const bg = type==='error' ? '#fee2e2' : type==='warning' ? '#fef9c3' : '#dcfce7';
+  const color = type==='error' ? '#dc2626' : type==='warning' ? '#854d0e' : '#166534';
+  return (
+    <div style={{ position:'fixed', bottom:24, right:24, background:bg, color, borderRadius:10, padding:'12px 20px', boxShadow:'0 8px 24px rgba(0,0,0,0.15)', zIndex:2000, fontSize:14, fontWeight:600, maxWidth:320 }}>
+      {msg}
+    </div>
+  );
+};
+
+// ===== SETUP PAGE =====
+function SetupPage({ onSave }) {
+  const [url, setUrl] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const test = async () => {
+    if (!url.trim()) return;
+    setTesting(true); setResult(null);
+    try {
+      const data = await apiGet(url.trim());
+      if (data.error) throw new Error(data.error);
+      setResult({ ok:true, msg:`接続成功！試験${data.trials?.length||0}件、ナレッジ${data.knowledge?.length||0}件、タスク${data.tasks?.length||0}件` });
+    } catch(e) {
+      setResult({ ok:false, msg:'接続失敗: ' + e.message });
+    }
+    setTesting(false);
+  };
+
+  return (
+    <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%)', padding:24 }}>
+      <div style={{ background:'#fff', borderRadius:20, padding:40, maxWidth:560, width:'100%', boxShadow:'0 32px 80px rgba(0,0,0,0.4)' }}>
+        <div style={{ textAlign:'center', marginBottom:32 }}>
+          <div style={{ fontSize:48, marginBottom:12 }}>🔬</div>
+          <h1 style={{ fontSize:22, fontWeight:800, color:'#1e293b', lineHeight:1.3 }}>臨床研究推進ナレッジシステム</h1>
+          <p style={{ color:'#64748b', fontSize:14, marginTop:6 }}>北里大学病院 臨床研究推進センター</p>
+        </div>
+        <div style={{ background:'#f8fafc', borderRadius:12, padding:20, marginBottom:24, border:'1px solid #e2e8f0' }}>
+          <p style={{ fontSize:13, fontWeight:700, color:'#374151', marginBottom:8 }}>初期設定</p>
+          <p style={{ fontSize:12, color:'#64748b', lineHeight:1.8 }}>
+            Google Apps ScriptのウェブアプリURLを入力してください。<br/>
+            設定手順はREADME.mdをご参照ください。
+          </p>
+        </div>
+        <Input label="Google Apps Script ウェブアプリURL"
+          value={url} onChange={setUrl}
+          placeholder="https://script.google.com/macros/s/..." />
+        <div style={{ display:'flex', gap:10, marginBottom:16 }}>
+          <Btn onClick={test} variant="secondary" disabled={testing || !url.trim()}>
+            {testing ? '接続確認中...' : '🔍 接続テスト'}
+          </Btn>
+          <Btn onClick={() => { if(result?.ok) onSave(url.trim()); }} disabled={!result?.ok}>
+            ✅ このURLで開始
+          </Btn>
+        </div>
+        {result && (
+          <div style={{ padding:'10px 16px', borderRadius:8, background:result.ok?'#dcfce7':'#fee2e2', color:result.ok?'#166534':'#dc2626', fontSize:13, fontWeight:600 }}>
+            {result.ok ? '✅ ' : '❌ '}{result.msg}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ===== DASHBOARD =====
+function Dashboard({ trials, tasks, knowledges }) {
+  const today = new Date().toISOString().slice(0,10);
+  const active = trials.filter(t=>t.status==='進行中').length;
+  const done = trials.filter(t=>t.status==='完了').length;
+  const pending = tasks.filter(t=>t.status!=='完了').length;
+  const overdue = tasks.filter(t=>t.status!=='完了' && t.dueDate < today);
+
+  return (
+    <div>
+      <div style={{ marginBottom:24 }}>
+        <h2 style={{ margin:0, fontSize:22, fontWeight:800, color:'#1e293b' }}>ダッシュボード</h2>
+        <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:14 }}>北里大学病院 臨床研究推進センター ARO</p>
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:16, marginBottom:24 }}>
+        {[
+          { label:'進行中の試験', value:active, color:'#3b82f6', icon:'🔬' },
+          { label:'完了試験',     value:done,   color:'#22c55e', icon:'✅' },
+          { label:'未完了タスク', value:pending, color:'#f59e0b', icon:'📋' },
+          { label:'ナレッジ件数', value:knowledges.length, color:'#8b5cf6', icon:'📚' },
+        ].map(s=>(
+          <div key={s.label} style={{ background:'#fff', borderRadius:12, padding:18, border:'1px solid #e2e8f0', boxShadow:'0 1px 4px rgba(0,0,0,0.05)' }}>
+            <div style={{ fontSize:26, marginBottom:8 }}>{s.icon}</div>
+            <div style={{ fontSize:30, fontWeight:800, color:s.color }}>{s.value}</div>
+            <div style={{ fontSize:12, color:'#64748b', marginTop:2 }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:20 }}>
+        <Card>
+          <h3 style={{ margin:'0 0 16px', fontSize:15, fontWeight:700, color:'#1e293b' }}>📊 試験一覧・進捗</h3>
+          {trials.length === 0 && <p style={{ color:'#94a3b8', fontSize:13 }}>試験が登録されていません</p>}
+          {trials.map(t=>(
+            <div key={t.id} style={{ marginBottom:16, paddingBottom:16, borderBottom:'1px solid #f1f5f9' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6, flexWrap:'wrap', gap:6 }}>
+                <span style={{ fontSize:13, fontWeight:700, color:'#1e293b' }}>{t.name}</span>
+                <StatusBadge status={t.status} />
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                <div style={{ flex:1 }}><ProgressBar value={Number(t.progress)||0} color={t.status==='完了'?'#22c55e':'#3b82f6'} /></div>
+                <span style={{ fontSize:12, color:'#64748b', minWidth:32 }}>{t.progress}%</span>
+              </div>
+            </div>
+          ))}
+        </Card>
+        <Card>
+          <h3 style={{ margin:'0 0 16px', fontSize:15, fontWeight:700, color:'#1e293b' }}>
+            ⚡ 直近のタスク
+            {overdue.length>0 && <span style={{ marginLeft:8, background:'#fee2e2', color:'#dc2626', borderRadius:10, padding:'2px 8px', fontSize:11, fontWeight:700 }}>期限超過 {overdue.length}件</span>}
+          </h3>
+          {tasks.filter(t=>t.status!=='完了').slice(0,6).map(t=>{
+            const trial = trials.find(tr=>tr.id===t.trialId);
+            const isOD = t.dueDate < today;
+            return (
+              <div key={t.id} style={{ display:'flex', gap:10, marginBottom:10, padding:'10px', borderRadius:8, background:isOD?'#fff5f5':'#f8fafc', border:`1px solid ${isOD?'#fecaca':'#e2e8f0'}` }}>
+                <div style={{ width:4, borderRadius:2, background:CATEGORY_COLOR[t.category]||'#94a3b8', flexShrink:0 }} />
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, fontWeight:600, color:'#1e293b', marginBottom:2 }}>{t.title}</div>
+                  <div style={{ fontSize:11, color:'#64748b' }}>{trial?.name||t.trialId} · 担当: {t.assignee} · 期限: {t.dueDate}</div>
+                </div>
+                <span style={{ ...TASK_STATUS_COLOR[t.status], padding:'2px 8px', borderRadius:6, fontSize:11, fontWeight:700, flexShrink:0 }}>{t.status}</span>
+              </div>
+            );
+          })}
+          {tasks.filter(t=>t.status!=='完了').length===0 && <p style={{ color:'#94a3b8', fontSize:13 }}>未完了タスクはありません</p>}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ===== TRIALS PAGE =====
+function TrialsPage({ trials, onSave }) {
+  const [showForm, setShowForm] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [filter, setFilter] = useState('すべて');
+  const empty = { name:'', phase:'第I相', sponsor:'', pi:'', startDate:'', endDate:'', status:'進行中', description:'', irb:'', progress:0, assignees:{ pm:'', dm:'', monitoring:'', stats:'', admin:'' } };
+  const [form, setForm] = useState(empty);
+
+  const openAdd = () => { setForm(empty); setSelected(null); setShowForm(true); };
+  const openEdit = t => { setForm({ ...t, assignees:{ ...(t.assignees||{}) } }); setSelected(t); setShowForm(true); };
+  const handleSubmit = e => {
+    e.preventDefault();
+    let updated;
+    if (selected) updated = trials.map(x=>x.id===selected.id ? {...form, id:selected.id} : x);
+    else updated = [...trials, { ...form, id:'T'+Date.now() }];
+    onSave(updated);
+    setShowForm(false);
+  };
+  const upd = (k,v) => setForm(f=>({...f,[k]:v}));
+  const updA = (k,v) => setForm(f=>({...f, assignees:{...f.assignees,[k]:v}}));
+
+  const filtered = filter==='すべて' ? trials : trials.filter(t=>t.status===filter);
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+        <div>
+          <h2 style={{ margin:0, fontSize:22, fontWeight:800, color:'#1e293b' }}>試験管理</h2>
+          <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:14 }}>登録されている全試験の管理</p>
+        </div>
+        <Btn onClick={openAdd}>＋ 新規試験登録</Btn>
+      </div>
+      <div style={{ display:'flex', gap:8, marginBottom:20, flexWrap:'wrap' }}>
+        {['すべて','進行中','準備中','完了','停止中'].map(s=>(
+          <button key={s} onClick={()=>setFilter(s)} style={{
+            padding:'6px 16px', borderRadius:20, border:'none', cursor:'pointer', fontSize:13, fontWeight:600,
+            background:filter===s?'#2563eb':'#f1f5f9', color:filter===s?'#fff':'#64748b' }}>
+            {s}
+          </button>
+        ))}
+      </div>
+      <div style={{ display:'grid', gap:16 }}>
+        {filtered.map(t=>(
+          <div key={t.id} className="card-hover" style={{ background:'#fff', borderRadius:12, padding:20, border:'1px solid #e2e8f0', boxShadow:'0 1px 4px rgba(0,0,0,0.04)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:10 }}>
+              <div style={{ flex:1 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6, flexWrap:'wrap' }}>
+                  <span style={{ fontSize:16, fontWeight:800, color:'#1e293b' }}>{t.name}</span>
+                  <span style={{ fontSize:11, fontWeight:700, color:PHASE_COLOR[t.phase]||'#64748b', background:(PHASE_COLOR[t.phase]||'#94a3b8')+'22', padding:'3px 10px', borderRadius:20 }}>{t.phase}</span>
+                  <StatusBadge status={t.status} />
+                </div>
+                <p style={{ margin:'0 0 10px', fontSize:13, color:'#64748b' }}>{t.description}</p>
+                <div style={{ display:'flex', gap:16, fontSize:12, color:'#94a3b8', flexWrap:'wrap' }}>
+                  <span>🏢 {t.sponsor}</span>
+                  <span>👨‍⚕️ PI: {t.pi}</span>
+                  <span>📅 {t.startDate} ～ {t.endDate}</span>
+                  <span>📋 {t.irb}</span>
+                </div>
+              </div>
+              <div style={{ display:'flex', gap:8 }}>
+                <Btn onClick={()=>openEdit(t)} variant="secondary" small>編集</Btn>
+                <Btn onClick={()=>{ if(window.confirm('この試験を削除しますか？')) onSave(trials.filter(x=>x.id!==t.id)); }} variant="danger" small>削除</Btn>
+              </div>
+            </div>
+            <div style={{ marginTop:14 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4, fontSize:12, color:'#64748b' }}>
+                <span>進捗</span><span>{t.progress}%</span>
+              </div>
+              <ProgressBar value={Number(t.progress)||0} color={t.status==='完了'?'#22c55e':'#3b82f6'} />
+            </div>
+            <div style={{ marginTop:12, display:'flex', gap:8, flexWrap:'wrap' }}>
+              {Object.entries({ PM:(t.assignees||{}).pm, DM:(t.assignees||{}).dm, モニタリング:(t.assignees||{}).monitoring, 統計:(t.assignees||{}).stats, 事務:(t.assignees||{}).admin })
+                .filter(([,v])=>v&&v!=='-').map(([role,name])=>(
+                  <span key={role} style={{ fontSize:11, background:'#f1f5f9', borderRadius:6, padding:'3px 10px', color:'#475569' }}>
+                    <strong>{role}</strong>: {name}
+                  </span>
+                ))}
+            </div>
+          </div>
+        ))}
+        {filtered.length===0 && <div style={{ textAlign:'center', padding:60, color:'#94a3b8' }}><div style={{ fontSize:40, marginBottom:12 }}>📭</div><p>該当する試験がありません</p></div>}
+      </div>
+
+      {showForm && (
+        <Modal title={selected?'試験情報の編集':'新規試験登録'} onClose={()=>setShowForm(false)} wide>
+          <form onSubmit={handleSubmit}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 16px' }}>
+              <div style={{ gridColumn:'1/-1' }}><Input label="試験名" value={form.name} onChange={v=>upd('name',v)} required placeholder="例: 第I相試験 ABC-123" /></div>
+              <Select label="フェーズ" value={form.phase} onChange={v=>upd('phase',v)} options={['第I相','第II相','第III相','観察研究','医師主導','その他']} />
+              <Select label="ステータス" value={form.status} onChange={v=>upd('status',v)} options={['準備中','進行中','停止中','完了']} />
+              <Input label="スポンサー" value={form.sponsor} onChange={v=>upd('sponsor',v)} placeholder="製薬会社名など" />
+              <Input label="主任研究者 (PI)" value={form.pi} onChange={v=>upd('pi',v)} placeholder="氏名" />
+              <Input label="開始日" type="date" value={form.startDate} onChange={v=>upd('startDate',v)} />
+              <Input label="終了（予定）日" type="date" value={form.endDate} onChange={v=>upd('endDate',v)} />
+              <div style={{ gridColumn:'1/-1' }}><Input label="IRB承認番号" value={form.irb} onChange={v=>upd('irb',v)} placeholder="例: 北里大学倫理委員会 承認番号: 2024-001" /></div>
+              <div style={{ gridColumn:'1/-1' }}><Textarea label="試験概要" value={form.description} onChange={v=>upd('description',v)} rows={3} /></div>
+            </div>
+            <div style={{ marginBottom:16 }}>
+              <label style={{ fontSize:13, fontWeight:600, color:'#374151', display:'block', marginBottom:6 }}>進捗 ({form.progress}%)</label>
+              <input type="range" min={0} max={100} value={form.progress} onChange={e=>upd('progress',Number(e.target.value))} style={{ width:'100%', accentColor:'#2563eb' }} />
+            </div>
+            <p style={{ margin:'0 0 10px', fontSize:13, fontWeight:700, color:'#374151' }}>担当者設定</p>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10, marginBottom:18 }}>
+              {[['pm','PM'],['dm','DM'],['monitoring','モニタリング'],['stats','統計'],['admin','事務']].map(([k,l])=>(
+                <Input key={k} label={l} value={(form.assignees||{})[k]||''} onChange={v=>updA(k,v)} placeholder="担当者名" />
+              ))}
+            </div>
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+              <Btn variant="secondary" onClick={()=>setShowForm(false)}>キャンセル</Btn>
+              <Btn type="submit">{selected?'更新':'登録'}</Btn>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ===== KNOWLEDGE PAGE =====
+function KnowledgePage({ knowledges, trials, onSave }) {
+  const [showForm, setShowForm] = useState(false);
+  const [viewing, setViewing] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [filterTrial, setFilterTrial] = useState('すべて');
+  const [filterCat, setFilterCat] = useState('すべて');
+  const [search, setSearch] = useState('');
+  const cats = ['データ管理','モニタリング','統計','事務','PM','DM','その他'];
+  const empty = { trialId:trials[0]?.id||'', category:'データ管理', title:'', content:'', tags:'', author:'' };
+  const [form, setForm] = useState(empty);
+
+  const openAdd = () => { setForm(empty); setSelected(null); setShowForm(true); };
+  const openEdit = k => { setForm({...k, tags:Array.isArray(k.tags)?k.tags.join(', '):(k.tags||'')}); setSelected(k); setShowForm(true); };
+  const handleSubmit = e => {
+    e.preventDefault();
+    const now = new Date().toISOString().slice(0,10);
+    const tags = form.tags ? form.tags.split(',').map(t=>t.trim()).filter(Boolean) : [];
+    let updated;
+    if (selected) updated = knowledges.map(x=>x.id===selected.id ? {...form, tags, id:selected.id, updatedAt:now} : x);
+    else updated = [...knowledges, {...form, tags, id:'K'+Date.now(), updatedAt:now}];
+    onSave(updated);
+    setShowForm(false);
+  };
+  const upd = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  let filtered = knowledges;
+  if (filterTrial!=='すべて') filtered = filtered.filter(k=>k.trialId===filterTrial);
+  if (filterCat!=='すべて') filtered = filtered.filter(k=>k.category===filterCat);
+  if (search) filtered = filtered.filter(k=>k.title?.includes(search)||k.content?.includes(search)||(Array.isArray(k.tags)?k.tags:([k.tags]||[])).some(t=>t?.includes(search)));
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+        <div>
+          <h2 style={{ margin:0, fontSize:22, fontWeight:800, color:'#1e293b' }}>ナレッジベース</h2>
+          <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:14 }}>業務手順・マニュアル・ノウハウの一元管理</p>
+        </div>
+        <Btn onClick={openAdd}>＋ ナレッジ追加</Btn>
+      </div>
+      <div style={{ display:'flex', gap:10, marginBottom:20, flexWrap:'wrap', alignItems:'center' }}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 キーワード検索..."
+          style={{ padding:'8px 14px', borderRadius:8, border:'1px solid #d1d5db', fontSize:13, outline:'none', flex:1, minWidth:200 }} />
+        <select value={filterTrial} onChange={e=>setFilterTrial(e.target.value)} style={{ padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:13 }}>
+          <option value="すべて">すべての試験</option>
+          {trials.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <select value={filterCat} onChange={e=>setFilterCat(e.target.value)} style={{ padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:13 }}>
+          <option value="すべて">すべてのカテゴリ</option>
+          {cats.map(c=><option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:16 }}>
+        {filtered.map(k=>{
+          const trial = trials.find(t=>t.id===k.trialId);
+          const tags = Array.isArray(k.tags) ? k.tags : (k.tags ? [k.tags] : []);
+          return (
+            <div key={k.id} className="card-hover" style={{ background:'#fff', borderRadius:12, padding:18, border:'1px solid #e2e8f0', cursor:'pointer', boxShadow:'0 1px 4px rgba(0,0,0,0.04)' }}
+              onClick={()=>setViewing(k)}>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:10 }}>
+                <span style={{ fontSize:11, fontWeight:700, color:CATEGORY_COLOR[k.category]||'#64748b', background:(CATEGORY_COLOR[k.category]||'#94a3b8')+'18', padding:'3px 10px', borderRadius:6 }}>{k.category}</span>
+                <span style={{ fontSize:11, color:'#94a3b8' }}>{k.updatedAt}</span>
+              </div>
+              <h4 style={{ margin:'0 0 8px', fontSize:14, fontWeight:700, color:'#1e293b' }}>{k.title}</h4>
+              <p style={{ margin:'0 0 10px', fontSize:12, color:'#64748b', lineHeight:1.5, display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden' }}>
+                {(k.content||'').replace(/#+\s/g,'').slice(0,100)}...
+              </p>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <span style={{ fontSize:11, color:'#64748b', background:'#f1f5f9', borderRadius:4, padding:'2px 8px' }}>{trial?.name||k.trialId}</span>
+                <div style={{ display:'flex', gap:6 }} onClick={e=>e.stopPropagation()}>
+                  <Btn onClick={()=>openEdit(k)} variant="secondary" small>編集</Btn>
+                  <Btn onClick={()=>{ if(window.confirm('削除しますか？')) onSave(knowledges.filter(x=>x.id!==k.id)); }} variant="danger" small>削除</Btn>
+                </div>
+              </div>
+              {tags.length>0 && <div style={{ marginTop:10, display:'flex', gap:4, flexWrap:'wrap' }}>{tags.map(tag=><span key={tag} style={{ fontSize:10, background:'#f0f9ff', color:'#0369a1', borderRadius:4, padding:'2px 7px' }}>#{tag}</span>)}</div>}
+            </div>
+          );
+        })}
+        {filtered.length===0 && <div style={{ gridColumn:'1/-1', textAlign:'center', padding:60, color:'#94a3b8' }}><div style={{ fontSize:40, marginBottom:12 }}>📭</div><p>該当するナレッジが見つかりません</p></div>}
+      </div>
+
+      {viewing && (
+        <Modal title={viewing.title} onClose={()=>setViewing(null)} wide>
+          <div style={{ display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center' }}>
+            <span style={{ fontSize:12, fontWeight:700, color:CATEGORY_COLOR[viewing.category]||'#64748b', background:(CATEGORY_COLOR[viewing.category]||'#94a3b8')+'18', padding:'3px 10px', borderRadius:6 }}>{viewing.category}</span>
+            <span style={{ fontSize:12, color:'#64748b' }}>試験: {trials.find(t=>t.id===viewing.trialId)?.name}</span>
+            <span style={{ fontSize:12, color:'#64748b' }}>最終更新: {viewing.updatedAt}</span>
+            {viewing.author && <span style={{ fontSize:12, color:'#64748b' }}>作成者: {viewing.author}</span>}
+          </div>
+          <div style={{ background:'#f8fafc', borderRadius:8, padding:16, fontSize:13, lineHeight:1.9, whiteSpace:'pre-wrap', maxHeight:420, overflow:'auto', border:'1px solid #e2e8f0' }}>
+            {viewing.content}
+          </div>
+          {(Array.isArray(viewing.tags)?viewing.tags:[]).length>0 && (
+            <div style={{ marginTop:14, display:'flex', gap:6, flexWrap:'wrap' }}>
+              {(Array.isArray(viewing.tags)?viewing.tags:[]).map(t=><span key={t} style={{ fontSize:12, background:'#f0f9ff', color:'#0369a1', borderRadius:6, padding:'3px 10px' }}>#{t}</span>)}
+            </div>
+          )}
+          <div style={{ marginTop:16, display:'flex', gap:10, justifyContent:'flex-end' }}>
+            <Btn variant="secondary" onClick={()=>{ openEdit(viewing); setViewing(null); }}>✏️ 編集</Btn>
+            <Btn variant="secondary" onClick={()=>setViewing(null)}>閉じる</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {showForm && (
+        <Modal title={selected?'ナレッジ編集':'ナレッジ追加'} onClose={()=>setShowForm(false)} wide>
+          <form onSubmit={handleSubmit}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 16px' }}>
+              <div style={{ gridColumn:'1/-1' }}><Input label="タイトル" value={form.title} onChange={v=>upd('title',v)} required placeholder="例: EDCへのデータ入力手順" /></div>
+              <div style={{ marginBottom:14 }}>
+                <label style={{ display:'block', fontSize:13, fontWeight:600, color:'#374151', marginBottom:4 }}>対象試験<span style={{ color:'#ef4444' }}>*</span></label>
+                <select value={form.trialId} onChange={e=>upd('trialId',e.target.value)} style={{ width:'100%', padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:14 }}>
+                  {trials.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
+              <Select label="カテゴリ" value={form.category} onChange={v=>upd('category',v)} options={cats} />
+              <Input label="作成者" value={form.author||''} onChange={v=>upd('author',v)} placeholder="お名前" />
+              <div style={{ gridColumn:'1/-1' }}><Input label="タグ（カンマ区切り）" value={form.tags} onChange={v=>upd('tags',v)} placeholder="例: EDC, データ入力, 手順" /></div>
+              <div style={{ gridColumn:'1/-1' }}><Textarea label="内容（手順・注意点などを自由に記載）" value={form.content} onChange={v=>upd('content',v)} rows={10} placeholder="## 手順&#10;1. ログインする&#10;2. ..." /></div>
+            </div>
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+              <Btn variant="secondary" onClick={()=>setShowForm(false)}>キャンセル</Btn>
+              <Btn type="submit">{selected?'更新':'登録'}</Btn>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ===== TASKS PAGE =====
+function TasksPage({ tasks, trials, onSave }) {
+  const [showForm, setShowForm] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [filterStatus, setFilterStatus] = useState('すべて');
+  const [filterTrial, setFilterTrial] = useState('すべて');
+  const empty = { title:'', trialId:trials[0]?.id||'', assignee:'', dueDate:'', status:'未着手', category:'事務' };
+  const [form, setForm] = useState(empty);
+  const today = new Date().toISOString().slice(0,10);
+
+  const openAdd = () => { setForm(empty); setSelected(null); setShowForm(true); };
+  const openEdit = t => { setForm({...t}); setSelected(t); setShowForm(true); };
+  const handleSubmit = e => {
+    e.preventDefault();
+    let updated;
+    if (selected) updated = tasks.map(x=>x.id===selected.id ? {...form, id:selected.id} : x);
+    else updated = [...tasks, {...form, id:'TK'+Date.now()}];
+    onSave(updated);
+    setShowForm(false);
+  };
+  const upd = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  let filtered = tasks;
+  if (filterStatus!=='すべて') filtered = filtered.filter(t=>t.status===filterStatus);
+  if (filterTrial!=='すべて') filtered = filtered.filter(t=>t.trialId===filterTrial);
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+        <div>
+          <h2 style={{ margin:0, fontSize:22, fontWeight:800, color:'#1e293b' }}>タスク管理</h2>
+          <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:14 }}>各試験のタスク・マイルストーン管理</p>
+        </div>
+        <Btn onClick={openAdd}>＋ タスク追加</Btn>
+      </div>
+      <div style={{ display:'flex', gap:10, marginBottom:20, flexWrap:'wrap', alignItems:'center' }}>
+        <div style={{ display:'flex', gap:8 }}>
+          {['すべて','未着手','進行中','完了','遅延'].map(s=>(
+            <button key={s} onClick={()=>setFilterStatus(s)} style={{ padding:'6px 14px', borderRadius:20, border:'none', cursor:'pointer', fontSize:12, fontWeight:600, background:filterStatus===s?'#2563eb':'#f1f5f9', color:filterStatus===s?'#fff':'#64748b' }}>{s}</button>
+          ))}
+        </div>
+        <select value={filterTrial} onChange={e=>setFilterTrial(e.target.value)} style={{ padding:'7px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:13 }}>
+          <option value="すべて">すべての試験</option>
+          {trials.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+      </div>
+      <div style={{ background:'#fff', borderRadius:12, border:'1px solid #e2e8f0', overflow:'hidden' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+          <thead>
+            <tr style={{ background:'#f8fafc', borderBottom:'2px solid #e2e8f0' }}>
+              {['タスク名','試験','カテゴリ','担当者','期限','状態','操作'].map(h=>(
+                <th key={h} style={{ padding:'12px 16px', textAlign:'left', fontWeight:700, color:'#374151', fontSize:12 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map(t=>{
+              const trial = trials.find(tr=>tr.id===t.trialId);
+              const isOD = t.status!=='完了' && t.dueDate < today;
+              return (
+                <tr key={t.id} style={{ borderBottom:'1px solid #f1f5f9', background:isOD?'#fff5f5':'#fff' }}>
+                  <td style={{ padding:'12px 16px', fontWeight:600, color:'#1e293b' }}>{isOD && <span style={{ marginRight:6, color:'#ef4444' }}>⚠️</span>}{t.title}</td>
+                  <td style={{ padding:'12px 16px', color:'#64748b', fontSize:12 }}>{trial?.name||'-'}</td>
+                  <td style={{ padding:'12px 16px' }}>
+                    <span style={{ fontSize:11, fontWeight:700, color:CATEGORY_COLOR[t.category]||'#64748b', background:(CATEGORY_COLOR[t.category]||'#94a3b8')+'18', padding:'3px 8px', borderRadius:4 }}>{t.category}</span>
+                  </td>
+                  <td style={{ padding:'12px 16px', color:'#374151' }}>{t.assignee}</td>
+                  <td style={{ padding:'12px 16px', color:isOD?'#ef4444':'#374151', fontWeight:isOD?700:400 }}>{t.dueDate}</td>
+                  <td style={{ padding:'12px 16px' }}><span style={{ ...TASK_STATUS_COLOR[t.status], padding:'3px 10px', borderRadius:6, fontSize:11, fontWeight:700 }}>{t.status}</span></td>
+                  <td style={{ padding:'12px 16px' }}>
+                    <div style={{ display:'flex', gap:6 }}>
+                      <Btn onClick={()=>openEdit(t)} variant="secondary" small>編集</Btn>
+                      <Btn onClick={()=>{ if(window.confirm('削除しますか？')) onSave(tasks.filter(x=>x.id!==t.id)); }} variant="danger" small>削除</Btn>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {filtered.length===0 && <div style={{ textAlign:'center', padding:40, color:'#94a3b8' }}>タスクがありません</div>}
+      </div>
+
+      {showForm && (
+        <Modal title={selected?'タスク編集':'タスク追加'} onClose={()=>setShowForm(false)}>
+          <form onSubmit={handleSubmit}>
+            <Input label="タスク名" value={form.title} onChange={v=>upd('title',v)} required />
+            <div style={{ marginBottom:14 }}>
+              <label style={{ display:'block', fontSize:13, fontWeight:600, color:'#374151', marginBottom:4 }}>対象試験<span style={{ color:'#ef4444' }}>*</span></label>
+              <select value={form.trialId} onChange={e=>upd('trialId',e.target.value)} style={{ width:'100%', padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:14 }}>
+                {trials.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </div>
+            <Select label="カテゴリ" value={form.category} onChange={v=>upd('category',v)} options={['PM','DM','データ管理','モニタリング','統計','事務','その他']} />
+            <Input label="担当者" value={form.assignee} onChange={v=>upd('assignee',v)} placeholder="担当者名" />
+            <Input label="期限" type="date" value={form.dueDate} onChange={v=>upd('dueDate',v)} />
+            <Select label="状態" value={form.status} onChange={v=>upd('status',v)} options={['未着手','進行中','完了','遅延']} />
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+              <Btn variant="secondary" onClick={()=>setShowForm(false)}>キャンセル</Btn>
+              <Btn type="submit">{selected?'更新':'追加'}</Btn>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ===== HANDOVER PAGE =====
+function HandoverPage({ trials, knowledges, tasks }) {
+  const [sel, setSel] = useState(trials[0]?.id||'');
+  const trial = trials.find(t=>t.id===sel);
+  const tk = knowledges.filter(k=>k.trialId===sel);
+  const tt = tasks.filter(t=>t.trialId===sel && t.status!=='完了');
+  const today = new Date().toISOString().slice(0,10);
+
+  return (
+    <div>
+      <div style={{ marginBottom:20 }}>
+        <h2 style={{ margin:0, fontSize:22, fontWeight:800, color:'#1e293b' }}>引き継ぎシート</h2>
+        <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:14 }}>担当者交代・休暇時のスムーズな引き継ぎをサポート</p>
+      </div>
+      <div style={{ marginBottom:20 }}>
+        <label style={{ display:'block', fontSize:13, fontWeight:600, color:'#374151', marginBottom:6 }}>試験を選択</label>
+        <select value={sel} onChange={e=>setSel(e.target.value)} style={{ padding:'10px 16px', borderRadius:8, border:'1px solid #d1d5db', fontSize:14, minWidth:300 }}>
+          {trials.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+      </div>
+      {trial && (
+        <div style={{ display:'grid', gap:20 }}>
+          <div style={{ background:'linear-gradient(135deg, #1e40af, #3b82f6)', borderRadius:16, padding:24, color:'#fff' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:10, marginBottom:14 }}>
+              <div>
+                <h3 style={{ margin:0, fontSize:20, fontWeight:800 }}>{trial.name}</h3>
+                <p style={{ margin:'6px 0 0', opacity:0.8, fontSize:13 }}>{trial.description}</p>
+              </div>
+              <StatusBadge status={trial.status} />
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:16 }}>
+              {[['フェーズ',trial.phase],['スポンサー',trial.sponsor],['PI',trial.pi],['開始日',trial.startDate],['終了予定日',trial.endDate],['進捗',trial.progress+'%']].map(([l,v])=>(
+                <div key={l}><div style={{ fontSize:11, opacity:0.7, marginBottom:2 }}>{l}</div><div style={{ fontSize:14, fontWeight:700 }}>{v}</div></div>
+              ))}
+            </div>
+            <div style={{ marginTop:16 }}>
+              <div style={{ height:8, background:'rgba(255,255,255,0.3)', borderRadius:4 }}>
+                <div style={{ height:'100%', width:`${trial.progress}%`, background:'#fff', borderRadius:4 }} />
+              </div>
+            </div>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:20 }}>
+            <Card>
+              <h4 style={{ margin:'0 0 14px', fontSize:14, fontWeight:700, color:'#1e293b' }}>👥 担当者一覧</h4>
+              {Object.entries({ PM:(trial.assignees||{}).pm, DM:(trial.assignees||{}).dm, モニタリング:(trial.assignees||{}).monitoring, 統計:(trial.assignees||{}).stats, 事務:(trial.assignees||{}).admin }).map(([role,name])=>(
+                <div key={role} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:'1px solid #f1f5f9' }}>
+                  <span style={{ fontSize:13, color:'#64748b', fontWeight:600 }}>{role}</span>
+                  <span style={{ fontSize:13, fontWeight:700, color:name&&name!=='-'?'#1e293b':'#94a3b8' }}>{name||'未設定'}</span>
+                </div>
+              ))}
+            </Card>
+            <Card>
+              <h4 style={{ margin:'0 0 14px', fontSize:14, fontWeight:700, color:'#1e293b' }}>
+                ⚡ 未完了タスク
+                {tt.length>0 && <span style={{ marginLeft:8, background:'#fee2e2', color:'#dc2626', borderRadius:10, padding:'2px 8px', fontSize:11 }}>{tt.length}件</span>}
+              </h4>
+              {tt.length===0 ? <p style={{ color:'#94a3b8', fontSize:13 }}>未完了タスクはありません</p> :
+                tt.map(t=>(
+                  <div key={t.id} style={{ padding:'8px 10px', borderRadius:8, background:t.dueDate<today?'#fff5f5':'#f8fafc', marginBottom:8, border:`1px solid ${t.dueDate<today?'#fecaca':'#e2e8f0'}` }}>
+                    <div style={{ fontWeight:600, fontSize:13, color:'#1e293b' }}>{t.title}</div>
+                    <div style={{ fontSize:11, color:'#64748b', marginTop:3 }}>期限: {t.dueDate} · 担当: {t.assignee}</div>
+                  </div>
+                ))}
+            </Card>
+          </div>
+          <Card>
+            <h4 style={{ margin:'0 0 14px', fontSize:14, fontWeight:700, color:'#1e293b' }}>📚 関連ナレッジ・手順書 ({tk.length}件)</h4>
+            {tk.length===0 ? <p style={{ color:'#94a3b8', fontSize:13 }}>この試験のナレッジはまだ登録されていません</p> : (
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))', gap:10 }}>
+                {tk.map(k=>(
+                  <div key={k.id} style={{ padding:12, borderRadius:8, background:'#f8fafc', border:'1px solid #e2e8f0' }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:CATEGORY_COLOR[k.category]||'#64748b', marginBottom:4 }}>{k.category}</div>
+                    <div style={{ fontSize:13, fontWeight:600, color:'#1e293b' }}>{k.title}</div>
+                    <div style={{ fontSize:11, color:'#94a3b8', marginTop:3 }}>更新: {k.updatedAt} · {k.author}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== MAIN APP =====
+function App() {
+  const [gasUrl, setGasUrl] = useState(() => localStorage.getItem(GAS_URL_KEY)||'');
+  const [page, setPage] = useState('dashboard');
+  const [trials, setTrials] = useState([]);
+  const [knowledges, setKnowledges] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [lastSaved, setLastSaved] = useState(null);
+
+  const showToast = (msg, type='success') => setToast({ msg, type });
+
+  const loadData = useCallback(async (url) => {
+    setLoading(true);
+    try {
+      const data = await apiGet(url);
+      setTrials(data.trials||[]);
+      setKnowledges(data.knowledge||[]);
+      setTasks(data.tasks||[]);
+      setLastSaved(new Date().toLocaleTimeString('ja-JP'));
+    } catch(e) {
+      showToast('データの読み込みに失敗しました: '+e.message, 'error');
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { if (gasUrl) loadData(gasUrl); }, [gasUrl]);
+
+  const handleSaveGasUrl = url => {
+    localStorage.setItem(GAS_URL_KEY, url);
+    setGasUrl(url);
+  };
+
+  const saveTrials = async (updated) => {
+    setTrials(updated);
+    setSaving(true);
+    try {
+      await apiPost(gasUrl, 'saveTrials', updated);
+      showToast('試験情報を保存しました');
+    } catch(e) { showToast('保存失敗: '+e.message, 'error'); }
+    setSaving(false);
+  };
+  const saveKnowledge = async (updated) => {
+    setKnowledges(updated);
+    setSaving(true);
+    try {
+      await apiPost(gasUrl, 'saveKnowledge', updated);
+      showToast('ナレッジを保存しました');
+    } catch(e) { showToast('保存失敗: '+e.message, 'error'); }
+    setSaving(false);
+  };
+  const saveTasks = async (updated) => {
+    setTasks(updated);
+    setSaving(true);
+    try {
+      await apiPost(gasUrl, 'saveTasks', updated);
+      showToast('タスクを保存しました');
+    } catch(e) { showToast('保存失敗: '+e.message, 'error'); }
+    setSaving(false);
+  };
+
+  if (!gasUrl) return <SetupPage onSave={handleSaveGasUrl} />;
+
+  const nav = [
+    { id:'dashboard', icon:'🏠', label:'ダッシュボード' },
+    { id:'trials',    icon:'🔬', label:'試験管理' },
+    { id:'knowledge', icon:'📚', label:'ナレッジベース' },
+    { id:'tasks',     icon:'✅', label:'タスク管理' },
+    { id:'handover',  icon:'🤝', label:'引き継ぎシート' },
+  ];
+
+  return (
+    <div style={{ display:'flex', minHeight:'100vh', background:'#f1f5f9' }}>
+      {/* Sidebar */}
+      <div className="sidebar" style={{ width:220, background:'#0f172a', display:'flex', flexDirection:'column', position:'fixed', top:0, left:0, height:'100vh', zIndex:100 }}>
+        <div style={{ padding:'22px 20px 18px' }}>
+          <div style={{ fontSize:10, fontWeight:700, color:'#3b82f6', letterSpacing:2, marginBottom:4 }}>北里大学病院</div>
+          <div style={{ fontSize:14, fontWeight:800, color:'#fff', lineHeight:1.35 }}>臨床研究推進<br/>ナレッジシステム</div>
+          <div style={{ marginTop:8, fontSize:10, color:'#475569' }}>臨床研究推進センター</div>
+        </div>
+        <div style={{ height:1, background:'#1e293b', margin:'0 16px' }} />
+        {saving && <div style={{ margin:'8px 16px', background:'#1e3a5f', borderRadius:6, padding:'6px 10px', fontSize:11, color:'#93c5fd' }}>💾 保存中...</div>}
+        <nav style={{ padding:'10px 8px', flex:1 }}>
+          {nav.map(n=>(
+            <button key={n.id} onClick={()=>setPage(n.id)} className="nav-btn"
+              style={{ display:'flex', alignItems:'center', gap:10, width:'100%', padding:'10px 12px', borderRadius:8, border:'none', cursor:'pointer',
+                background:page===n.id?'#1e40af':'transparent', color:page===n.id?'#fff':'#94a3b8',
+                fontSize:13, fontWeight:page===n.id?700:500, marginBottom:2, textAlign:'left' }}>
+              <span className="nav-icon">{n.icon}</span>
+              <span className="nav-label">{n.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div style={{ padding:'14px 16px 20px', borderTop:'1px solid #1e293b' }}>
+          <div style={{ fontSize:11, color:'#475569', lineHeight:2 }}>
+            試験: {trials.length}件<br/>
+            ナレッジ: {knowledges.length}件<br/>
+            タスク: {tasks.length}件
+          </div>
+          <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:6 }}>
+            <button onClick={()=>loadData(gasUrl)} style={{ background:'#1e293b', color:'#94a3b8', border:'none', borderRadius:6, padding:'6px 10px', fontSize:11, cursor:'pointer', textAlign:'left' }}>
+              🔄 データ再読込
+            </button>
+            <button onClick={()=>{ if(window.confirm('GAS URLを再設定しますか？')) { localStorage.removeItem(GAS_URL_KEY); setGasUrl(''); }}} style={{ background:'#1e293b', color:'#94a3b8', border:'none', borderRadius:6, padding:'6px 10px', fontSize:11, cursor:'pointer', textAlign:'left' }}>
+              ⚙️ URL再設定
+            </button>
+          </div>
+          {lastSaved && <div style={{ marginTop:8, fontSize:10, color:'#334155' }}>最終取得: {lastSaved}</div>}
+        </div>
+      </div>
+
+      {/* Main */}
+      <div className="main-content" style={{ marginLeft:220, flex:1, padding:28, minHeight:'100vh' }}>
+        {loading ? (
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'60vh', flexDirection:'column', gap:16 }}>
+            <div style={{ fontSize:40 }}>🔬</div>
+            <p style={{ color:'#64748b', fontSize:14 }}>Googleスプレッドシートからデータを読み込み中...</p>
+          </div>
+        ) : (
+          <>
+            {page==='dashboard'  && <Dashboard   trials={trials} tasks={tasks} knowledges={knowledges} />}
+            {page==='trials'     && <TrialsPage   trials={trials} onSave={saveTrials} />}
+            {page==='knowledge'  && <KnowledgePage knowledges={knowledges} trials={trials} onSave={saveKnowledge} />}
+            {page==='tasks'      && <TasksPage    tasks={tasks} trials={trials} onSave={saveTasks} />}
+            {page==='handover'   && <HandoverPage trials={trials} knowledges={knowledges} tasks={tasks} />}
+          </>
+        )}
+      </div>
+
+      {toast && <Toast msg={toast.msg} type={toast.type} onClose={()=>setToast(null)} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
