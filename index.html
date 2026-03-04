@@ -586,7 +586,7 @@ function TasksPage({ tasks, trials, onSave }) {
   const [selected, setSelected] = useState(null);
   const [filterStatus, setFilterStatus] = useState('すべて');
   const [filterTrial, setFilterTrial] = useState('すべて');
-  const empty = { title:'', trialId:trials[0]?.id||'', assignee:'', dueDate:'', status:'未着手', category:'事務' };
+  const empty = { title:'', trialId:trials[0]?.id||'', assignee:'', startDate:'', dueDate:'', status:'未着手', category:'事務', groupLabel:'', progress:'未' };
   const [form, setForm] = useState(empty);
   const today = new Date().toISOString().slice(0,10);
 
@@ -667,6 +667,7 @@ function TasksPage({ tasks, trials, onSave }) {
         <Modal title={selected?'タスク編集':'タスク追加'} onClose={()=>setShowForm(false)}>
           <form onSubmit={handleSubmit}>
             <Input label="タスク名" value={form.title} onChange={v=>upd('title',v)} required />
+            <Input label="グループ（項目）" value={form.groupLabel||''} onChange={v=>upd('groupLabel',v)} placeholder="例: CRF作成（ガントチャートのグループ名）" />
             <div style={{ marginBottom:14 }}>
               <label style={{ display:'block', fontSize:13, fontWeight:600, color:'#374151', marginBottom:4 }}>対象試験<span style={{ color:'#ef4444' }}>*</span></label>
               <select value={form.trialId} onChange={e=>upd('trialId',e.target.value)} style={{ width:'100%', padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:14 }}>
@@ -675,7 +676,11 @@ function TasksPage({ tasks, trials, onSave }) {
             </div>
             <Select label="カテゴリ" value={form.category} onChange={v=>upd('category',v)} options={['PM','DM','データ管理','モニタリング','統計','事務','その他']} />
             <Input label="担当者" value={form.assignee} onChange={v=>upd('assignee',v)} placeholder="担当者名" />
-            <Input label="期限" type="date" value={form.dueDate} onChange={v=>upd('dueDate',v)} />
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+              <Input label="開始日" type="date" value={form.startDate||''} onChange={v=>upd('startDate',v)} />
+              <Input label="期限（終了日）" type="date" value={form.dueDate} onChange={v=>upd('dueDate',v)} />
+            </div>
+            <Select label="進捗" value={form.progress||'未'} onChange={v=>upd('progress',v)} options={['未','中','済']} />
             <Select label="状態" value={form.status} onChange={v=>upd('status',v)} options={['未着手','進行中','完了','遅延']} />
             <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
               <Btn variant="secondary" onClick={()=>setShowForm(false)}>キャンセル</Btn>
@@ -768,6 +773,282 @@ function HandoverPage({ trials, knowledges, tasks }) {
             )}
           </Card>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ===== GANTT PAGE (香川さん提案) =====
+function GanttPage({ tasks, trials, onSave }) {
+  const today = new Date().toISOString().slice(0,10);
+  const [filterTrial, setFilterTrial] = useState('すべて');
+  const [showForm, setShowForm] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const empty = { title:'', trialId:trials[0]?.id||'', assignee:'', startDate:'', dueDate:'', status:'未着手', category:'事務', groupLabel:'', progress:'未' };
+  const [form, setForm] = useState(empty);
+  const upd = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  const openAdd  = () => { setForm(empty); setSelected(null); setShowForm(true); };
+  const openEdit = t  => { setForm({...t}); setSelected(t); setShowForm(true); };
+  const handleSubmit = e => {
+    e.preventDefault();
+    let updated;
+    if (selected) updated = tasks.map(x=>x.id===selected.id ? {...form, id:selected.id} : x);
+    else updated = [...tasks, {...form, id:'TK'+Date.now()}];
+    onSave(updated);
+    setShowForm(false);
+  };
+
+  // Filter tasks that have startDate set
+  let ganttTasks = tasks.filter(t=>t.startDate && t.dueDate);
+  if (filterTrial !== 'すべて') ganttTasks = ganttTasks.filter(t=>t.trialId===filterTrial);
+
+  // Build date range: min startDate to max dueDate
+  const allDates = ganttTasks.flatMap(t=>[t.startDate, t.dueDate]).filter(Boolean).sort();
+  const rangeStart = allDates[0] || today;
+  const rangeEnd   = allDates[allDates.length-1] || today;
+
+  // Generate business days (weekdays only) in range
+  const businessDays = [];
+  {
+    let d = new Date(rangeStart);
+    const end = new Date(rangeEnd);
+    // Pad 2 days before/after
+    d.setDate(d.getDate()-2);
+    end.setDate(end.getDate()+3);
+    while(d <= end) {
+      const dow = d.getDay();
+      if (dow!==0 && dow!==6) businessDays.push(d.toISOString().slice(0,10));
+      d.setDate(d.getDate()+1);
+    }
+  }
+
+  // Group tasks by trial → groupLabel
+  const grouped = {};
+  ganttTasks.forEach(t => {
+    const trialName = trials.find(tr=>tr.id===t.trialId)?.name || t.trialId;
+    if (!grouped[trialName]) grouped[trialName] = {};
+    const grp = t.groupLabel || '（グループなし）';
+    if (!grouped[trialName][grp]) grouped[trialName][grp] = [];
+    grouped[trialName][grp].push(t);
+  });
+
+  const PROGRESS_STYLE = {
+    '済': { bg:'#fbbf24', text:'#78350f', label:'済' },
+    '中': { bg:'#fbbf24', text:'#78350f', label:'中', opacity:0.65 },
+    '未': { bg:'#e2e8f0', text:'#64748b', label:'未' },
+  };
+
+  const CELL_W = 28;
+  const isToday = d => d === today;
+  const isWeekend = d => { const dow = new Date(d).getDay(); return dow===0||dow===6; };
+
+  // Month groups for header
+  const monthGroups = [];
+  businessDays.forEach(d => {
+    const m = d.slice(0,7);
+    if (!monthGroups.length || monthGroups[monthGroups.length-1].month !== m) monthGroups.push({ month:m, count:1 });
+    else monthGroups[monthGroups.length-1].count++;
+  });
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+        <div>
+          <h2 style={{ margin:0, fontSize:22, fontWeight:800, color:'#1e293b' }}>ガントチャート</h2>
+          <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:14 }}>タスクのスケジュールと現在地の可視化（香川さん提案）</p>
+        </div>
+        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+          <select value={filterTrial} onChange={e=>setFilterTrial(e.target.value)}
+            style={{ padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:13 }}>
+            <option value="すべて">すべての試験</option>
+            {trials.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <Btn onClick={openAdd}>＋ タスク追加</Btn>
+        </div>
+      </div>
+
+      {ganttTasks.length === 0 ? (
+        <Card style={{ textAlign:'center', padding:60 }}>
+          <div style={{ fontSize:40, marginBottom:12 }}>📊</div>
+          <p style={{ color:'#94a3b8', fontSize:14 }}>ガントチャートに表示するタスクがありません。<br/>「開始日」と「終了日」が設定されたタスクがここに表示されます。</p>
+          <div style={{ marginTop:16 }}><Btn onClick={openAdd}>＋ タスクを追加する</Btn></div>
+        </Card>
+      ) : (
+        <div style={{ background:'#fff', borderRadius:12, border:'1px solid #e2e8f0', overflow:'auto', boxShadow:'0 1px 4px rgba(0,0,0,0.05)' }}>
+          <table style={{ borderCollapse:'collapse', fontSize:12, minWidth:'100%' }}>
+            <colgroup>
+              <col style={{ width:100 }} />
+              <col style={{ width:110 }} />
+              <col style={{ width:120 }} />
+              <col style={{ width:88 }} />
+              <col style={{ width:88 }} />
+              <col style={{ width:44 }} />
+              <col style={{ width:64 }} />
+              <col style={{ width:36 }} />
+              <col style={{ width:80 }} />
+              {businessDays.map(d=><col key={d} style={{ width:CELL_W }} />)}
+            </colgroup>
+            <thead>
+              {/* Month row */}
+              <tr style={{ background:'#f8fafc' }}>
+                <th colSpan={9} style={{ borderBottom:'1px solid #e2e8f0', borderRight:'2px solid #e2e8f0' }} />
+                {monthGroups.map(mg=>(
+                  <th key={mg.month} colSpan={mg.count}
+                    style={{ padding:'6px 0', textAlign:'center', fontSize:11, fontWeight:700, color:'#374151',
+                      borderBottom:'1px solid #e2e8f0', borderRight:'1px solid #e2e8f0', background:'#f8fafc' }}>
+                    {mg.month.slice(0,4)}年{parseInt(mg.month.slice(5))}月
+                  </th>
+                ))}
+              </tr>
+              {/* Column labels + day numbers */}
+              <tr style={{ background:'#f8fafc' }}>
+                {['試験名','項目','作業','開始日','終了日','日数','担当者','進捗','メモ'].map((h,i)=>(
+                  <th key={h} style={{ padding:'8px 10px', textAlign:'left', fontWeight:700, color:'#374151', fontSize:11,
+                    borderBottom:'2px solid #e2e8f0', borderRight:i===8?'2px solid #cbd5e1':'1px solid #f1f5f9',
+                    whiteSpace:'nowrap', background:'#f8fafc', position:'sticky', top:0, zIndex:10 }}>{h}</th>
+                ))}
+                {businessDays.map(d=>(
+                  <th key={d} style={{ padding:'4px 0', textAlign:'center', fontWeight:isToday(d)?800:500,
+                    color:isToday(d)?'#dc2626':'#94a3b8', fontSize:10,
+                    borderBottom:'2px solid #e2e8f0', borderRight:'1px solid #f1f5f9',
+                    background:isToday(d)?'#fef2f2':'#f8fafc',
+                    position:'sticky', top:0, zIndex:10, minWidth:CELL_W }}>
+                    {d.slice(8)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(grouped).map(([trialName, groups]) => {
+                const allTrialRows = Object.values(groups).flat();
+                return Object.entries(groups).map(([groupName, gtasks], gi) =>
+                  gtasks.map((t, ti) => {
+                    const bizDays = businessDays.filter(d=>d>=t.startDate && d<=t.dueDate).length;
+                    const ps = PROGRESS_STYLE[t.progress] || PROGRESS_STYLE['未'];
+                    const isOD = t.dueDate < today && t.progress !== '済';
+                    const showTrialCell = gi===0 && ti===0;
+                    const showGroupCell = ti===0;
+                    return (
+                      <tr key={t.id} style={{ borderBottom:'1px solid #f1f5f9' }}
+                        onMouseEnter={e=>e.currentTarget.style.background='#fafbff'}
+                        onMouseLeave={e=>e.currentTarget.style.background=''}>
+                        {/* 試験名 */}
+                        {showTrialCell && (
+                          <td rowSpan={allTrialRows.length}
+                            style={{ padding:'0 10px', fontWeight:700, color:'#1e293b', fontSize:12,
+                              borderRight:'1px solid #e2e8f0', verticalAlign:'middle', background:'#f8fafc',
+                              borderBottom:'1px solid #e2e8f0' }}>
+                            {trialName}
+                          </td>
+                        )}
+                        {/* 項目 */}
+                        {showGroupCell && (
+                          <td rowSpan={gtasks.length}
+                            style={{ padding:'8px 10px', fontWeight:600, color:'#374151', fontSize:12,
+                              borderRight:'1px solid #f1f5f9', verticalAlign:'middle', background:'#fafbfc',
+                              borderBottom:'1px solid #e2e8f0' }}>
+                            {groupName==='（グループなし）' ? '-' : groupName}
+                          </td>
+                        )}
+                        {/* 作業 */}
+                        <td style={{ padding:'8px 10px', color:'#1e293b', borderRight:'1px solid #f1f5f9', whiteSpace:'nowrap' }}>
+                          <span style={{ cursor:'pointer', color:'#3b82f6', textDecoration:'underline' }}
+                            onClick={()=>openEdit(t)}>{t.title}</span>
+                        </td>
+                        <td style={{ padding:'8px 10px', color:'#64748b', textAlign:'right', borderRight:'1px solid #f1f5f9', whiteSpace:'nowrap' }}>{t.startDate}</td>
+                        <td style={{ padding:'8px 10px', color:isOD?'#dc2626':'#64748b', fontWeight:isOD?700:400, textAlign:'right', borderRight:'1px solid #f1f5f9', whiteSpace:'nowrap' }}>{t.dueDate}</td>
+                        <td style={{ padding:'8px 6px', textAlign:'center', color:'#64748b', borderRight:'1px solid #f1f5f9' }}>{bizDays}</td>
+                        <td style={{ padding:'8px 10px', color:'#374151', borderRight:'1px solid #f1f5f9', whiteSpace:'nowrap' }}>{t.assignee}</td>
+                        <td style={{ padding:'6px 8px', textAlign:'center', borderRight:'2px solid #cbd5e1' }}>
+                          <span style={{ background:ps.bg, color:ps.text, padding:'2px 8px', borderRadius:6, fontSize:11, fontWeight:700, opacity:ps.opacity||1 }}>{ps.label}</span>
+                        </td>
+                        <td style={{ padding:'8px 10px', color:'#94a3b8', fontSize:11, borderRight:'2px solid #cbd5e1', maxWidth:80, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.memo||''}</td>
+                        {/* Gantt cells */}
+                        {businessDays.map(d=>{
+                          const inRange = d >= t.startDate && d <= t.dueDate;
+                          const isFirst = d === t.startDate;
+                          const isLast  = d === t.dueDate;
+                          const barColor = t.progress==='済' ? '#fbbf24' : t.progress==='中' ? '#fbbf24' : '#e2e8f0';
+                          const barOpacity = t.progress==='中' ? 0.7 : 1;
+                          return (
+                            <td key={d} style={{
+                              padding:0, textAlign:'center', position:'relative',
+                              background: isToday(d) ? '#fef2f2' : 'transparent',
+                              borderRight:'1px solid #f8fafc',
+                            }}>
+                              {inRange && (
+                                <div style={{
+                                  height:18, margin:'5px 1px',
+                                  background:barColor, opacity:barOpacity,
+                                  borderRadius:`${isFirst?6:0}px ${isLast?6:0}px ${isLast?6:0}px ${isFirst?6:0}px`,
+                                }} />
+                              )}
+                              {isToday(d) && (
+                                <div style={{ width:1, height:'100%', minHeight:28, background:'rgba(239,68,68,0.4)',
+                                  position:'absolute', top:0, left:'50%', transform:'translateX(-50%)', zIndex:4 }} />
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Legend */}
+      <div style={{ display:'flex', gap:16, marginTop:14, flexWrap:'wrap', alignItems:'center' }}>
+        <span style={{ fontSize:11, color:'#94a3b8', fontWeight:600 }}>凡例:</span>
+        {[['済','#fbbf24',1],['中','#fbbf24',0.65],['未','#e2e8f0',1]].map(([l,c,o])=>(
+          <div key={l} style={{ display:'flex', alignItems:'center', gap:5 }}>
+            <div style={{ width:28, height:10, background:c, opacity:o, borderRadius:3 }} />
+            <span style={{ fontSize:11, color:'#64748b' }}>{l}</span>
+          </div>
+        ))}
+        <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+          <div style={{ width:2, height:14, background:'#ef4444', borderRadius:1 }} />
+          <span style={{ fontSize:11, color:'#64748b' }}>本日</span>
+        </div>
+      </div>
+
+      {showForm && (
+        <Modal title={selected?'タスク編集':'タスク追加'} onClose={()=>setShowForm(false)} wide>
+          <form onSubmit={handleSubmit}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 16px' }}>
+              <div style={{ gridColumn:'1/-1' }}>
+                <Input label="作業名" value={form.title} onChange={v=>upd('title',v)} required placeholder="例: 作成" />
+              </div>
+              <div style={{ gridColumn:'1/-1' }}>
+                <Input label="グループ（項目）" value={form.groupLabel||''} onChange={v=>upd('groupLabel',v)} placeholder="例: CRF作成" />
+              </div>
+              <div style={{ gridColumn:'1/-1', marginBottom:14 }}>
+                <label style={{ display:'block', fontSize:13, fontWeight:600, color:'#374151', marginBottom:4 }}>対象試験<span style={{ color:'#ef4444' }}>*</span></label>
+                <select value={form.trialId} onChange={e=>upd('trialId',e.target.value)}
+                  style={{ width:'100%', padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:14 }}>
+                  {trials.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
+              <Input label="開始日" type="date" value={form.startDate||''} onChange={v=>upd('startDate',v)} required />
+              <Input label="終了日（期限）" type="date" value={form.dueDate} onChange={v=>upd('dueDate',v)} required />
+              <Input label="担当者" value={form.assignee} onChange={v=>upd('assignee',v)} placeholder="担当者名" />
+              <Select label="進捗" value={form.progress||'未'} onChange={v=>upd('progress',v)} options={['未','中','済']} />
+              <Select label="カテゴリ" value={form.category} onChange={v=>upd('category',v)} options={['PM','DM','データ管理','モニタリング','統計','事務','その他']} />
+              <Select label="状態" value={form.status} onChange={v=>upd('status',v)} options={['未着手','進行中','完了','遅延']} />
+              <div style={{ gridColumn:'1/-1' }}>
+                <Textarea label="メモ" value={form.memo||''} onChange={v=>upd('memo',v)} rows={2} placeholder="補足事項" />
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+              <Btn variant="secondary" onClick={()=>setShowForm(false)}>キャンセル</Btn>
+              <Btn type="submit">{selected?'更新':'追加'}</Btn>
+            </div>
+          </form>
+        </Modal>
       )}
     </div>
   );
@@ -1143,6 +1424,7 @@ function App() {
     { id:'trials',    icon:'🔬', label:'試験管理' },
     { id:'knowledge', icon:'📚', label:'ナレッジベース' },
     { id:'tasks',     icon:'✅', label:'タスク管理' },
+    { id:'gantt',     icon:'📊', label:'ガントチャート' },
     { id:'schedule',  icon:'📅', label:'共有スケジュール' },
     { id:'members',   icon:'👥', label:'業務状況' },
     { id:'handover',  icon:'🤝', label:'引き継ぎシート' },
@@ -1201,6 +1483,7 @@ function App() {
             {page==='trials'     && <TrialsPage   trials={trials} onSave={saveTrials} />}
             {page==='knowledge'  && <KnowledgePage knowledges={knowledges} trials={trials} onSave={saveKnowledge} />}
             {page==='tasks'      && <TasksPage    tasks={tasks} trials={trials} onSave={saveTasks} />}
+            {page==='gantt'      && <GanttPage     tasks={tasks} trials={trials} onSave={saveTasks} />}
             {page==='schedule'   && <SchedulePage schedules={schedules} onSave={saveSchedules} trials={trials} />}
             {page==='members'    && <MemberStatusPage tasks={tasks} trials={trials} memberStatuses={memberStatuses} onSaveMemberStatuses={saveMemberStatuses} />}
             {page==='handover'   && <HandoverPage trials={trials} knowledges={knowledges} tasks={tasks} />}
