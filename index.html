@@ -57,10 +57,14 @@ async function apiPost(gasUrl, action, data) {
 
 // ===== COLOR MAPS =====
 const STATUS_COLOR = {
-  '進行中': { bg:'#dbeafe', text:'#1d4ed8', dot:'#3b82f6' },
-  '完了':   { bg:'#dcfce7', text:'#166534', dot:'#22c55e' },
-  '停止中': { bg:'#fef9c3', text:'#854d0e', dot:'#eab308' },
-  '準備中': { bg:'#f3e8ff', text:'#6b21a8', dot:'#a855f7' },
+  '進行中':           { bg:'#dbeafe', text:'#1d4ed8', dot:'#3b82f6' },
+  '完了':             { bg:'#dcfce7', text:'#166534', dot:'#22c55e' },
+  '停止中':           { bg:'#fef9c3', text:'#854d0e', dot:'#eab308' },
+  '準備中':           { bg:'#f3e8ff', text:'#6b21a8', dot:'#a855f7' },
+  '被験者募集中':     { bg:'#fff7ed', text:'#c2410c', dot:'#f97316' },
+  '追跡期間中':       { bg:'#f0fdfa', text:'#0f766e', dot:'#14b8a6' },
+  'データクリーニング中': { bg:'#fdf4ff', text:'#7e22ce', dot:'#c026d3' },
+  '解析中':           { bg:'#eff6ff', text:'#1e40af', dot:'#60a5fa' },
 };
 const TASK_STATUS_COLOR = {
   '完了':   { bg:'#dcfce7', text:'#166534' },
@@ -223,12 +227,21 @@ function SetupPage({ onSave }) {
 }
 
 // ===== DASHBOARD =====
-function Dashboard({ trials, tasks, knowledges }) {
+function Dashboard({ trials, tasks, knowledges, schedules }) {
   const today = new Date().toISOString().slice(0,10);
   const active = trials.filter(t=>t.status==='進行中').length;
   const done = trials.filter(t=>t.status==='完了').length;
   const pending = tasks.filter(t=>t.status!=='完了').length;
   const overdue = tasks.filter(t=>t.status!=='完了' && t.dueDate < today);
+  const upcoming = [...(schedules||[])].filter(s=>s.date>=today).sort((a,b)=>a.date>b.date?1:-1).slice(0,4);
+
+  // 香川さん提案: タスクベースの進捗
+  const trialProgress = trials.map(tr => {
+    const trTasks = tasks.filter(t=>t.trialId===tr.id);
+    const completedTasks = trTasks.filter(t=>t.status==='完了').length;
+    const taskProgress = trTasks.length > 0 ? Math.round(completedTasks/trTasks.length*100) : Number(tr.progress)||0;
+    return { ...tr, taskTotal:trTasks.length, taskDone:completedTasks, taskProgress };
+  });
 
   return (
     <div>
@@ -250,19 +263,22 @@ function Dashboard({ trials, tasks, knowledges }) {
           </div>
         ))}
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:20 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:20, marginBottom:20 }}>
         <Card>
-          <h3 style={{ margin:'0 0 16px', fontSize:15, fontWeight:700, color:'#1e293b' }}>📊 試験一覧・進捗</h3>
+          <h3 style={{ margin:'0 0 4px', fontSize:15, fontWeight:700, color:'#1e293b' }}>📊 試験一覧・進捗</h3>
+          <p style={{ margin:'0 0 14px', fontSize:11, color:'#94a3b8' }}>タスク完了数ベースの進捗（香川さん提案）</p>
           {trials.length === 0 && <p style={{ color:'#94a3b8', fontSize:13 }}>試験が登録されていません</p>}
-          {trials.map(t=>(
+          {trialProgress.map(t=>(
             <div key={t.id} style={{ marginBottom:16, paddingBottom:16, borderBottom:'1px solid #f1f5f9' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6, flexWrap:'wrap', gap:6 }}>
                 <span style={{ fontSize:13, fontWeight:700, color:'#1e293b' }}>{t.name}</span>
                 <StatusBadge status={t.status} />
               </div>
               <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                <div style={{ flex:1 }}><ProgressBar value={Number(t.progress)||0} color={t.status==='完了'?'#22c55e':'#3b82f6'} /></div>
-                <span style={{ fontSize:12, color:'#64748b', minWidth:32 }}>{t.progress}%</span>
+                <div style={{ flex:1 }}><ProgressBar value={t.taskTotal>0?t.taskProgress:Number(t.progress)||0} color={t.status==='完了'?'#22c55e':'#3b82f6'} /></div>
+                <span style={{ fontSize:12, color:'#64748b', minWidth:80, textAlign:'right' }}>
+                  {t.taskTotal>0 ? `${t.taskDone}/${t.taskTotal}件` : `${t.progress}%`}
+                </span>
               </div>
             </div>
           ))}
@@ -289,6 +305,28 @@ function Dashboard({ trials, tasks, knowledges }) {
           {tasks.filter(t=>t.status!=='完了').length===0 && <p style={{ color:'#94a3b8', fontSize:13 }}>未完了タスクはありません</p>}
         </Card>
       </div>
+      {upcoming.length > 0 && (
+        <Card>
+          <h3 style={{ margin:'0 0 14px', fontSize:15, fontWeight:700, color:'#1e293b' }}>📅 直近の共有スケジュール</h3>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))', gap:10 }}>
+            {upcoming.map(s => {
+              const trial = trials.find(t=>t.id===s.trialId);
+              const days = Math.ceil((new Date(s.date)-new Date(today))/(1000*60*60*24));
+              const urgentColor = days===0?'#dc2626':days<=7?'#f97316':'#2563eb';
+              return (
+                <div key={s.id} style={{ padding:12, borderRadius:8, background:'#f8fafc', border:'1px solid #e2e8f0' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+                    <span style={{ fontSize:11, fontWeight:700, color:urgentColor }}>{days===0?'今日':`あと${days}日`}</span>
+                    <span style={{ fontSize:11, color:'#94a3b8' }}>{s.date}</span>
+                  </div>
+                  <div style={{ fontSize:13, fontWeight:700, color:'#1e293b' }}>{s.title}</div>
+                  {trial && <div style={{ fontSize:11, color:'#64748b', marginTop:3 }}>🔬 {trial.name}</div>}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -326,7 +364,7 @@ function TrialsPage({ trials, onSave }) {
         <Btn onClick={openAdd}>＋ 新規試験登録</Btn>
       </div>
       <div style={{ display:'flex', gap:8, marginBottom:20, flexWrap:'wrap' }}>
-        {['すべて','進行中','準備中','完了','停止中'].map(s=>(
+        {['すべて','準備中','被験者募集中','進行中','追跡期間中','データクリーニング中','解析中','停止中','完了'].map(s=>(
           <button key={s} onClick={()=>setFilter(s)} style={{
             padding:'6px 16px', borderRadius:20, border:'none', cursor:'pointer', fontSize:13, fontWeight:600,
             background:filter===s?'#2563eb':'#f1f5f9', color:filter===s?'#fff':'#64748b' }}>
@@ -382,7 +420,7 @@ function TrialsPage({ trials, onSave }) {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 16px' }}>
               <div style={{ gridColumn:'1/-1' }}><Input label="試験名" value={form.name} onChange={v=>upd('name',v)} required placeholder="例: 第I相試験 ABC-123" /></div>
               <Select label="フェーズ" value={form.phase} onChange={v=>upd('phase',v)} options={['第I相','第II相','第III相','観察研究','医師主導','その他']} />
-              <Select label="ステータス" value={form.status} onChange={v=>upd('status',v)} options={['準備中','進行中','停止中','完了']} />
+              <Select label="ステータス" value={form.status} onChange={v=>upd('status',v)} options={['準備中','被験者募集中','進行中','追跡期間中','データクリーニング中','解析中','停止中','完了']} />
               <Input label="スポンサー" value={form.sponsor} onChange={v=>upd('sponsor',v)} placeholder="製薬会社名など" />
               <Input label="主任研究者 (PI)" value={form.pi} onChange={v=>upd('pi',v)} placeholder="氏名" />
               <Input label="開始日" type="date" value={form.startDate} onChange={v=>upd('startDate',v)} />
@@ -592,7 +630,7 @@ function TasksPage({ tasks, trials, onSave }) {
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
           <thead>
             <tr style={{ background:'#f8fafc', borderBottom:'2px solid #e2e8f0' }}>
-              {['タスク名','試験','カテゴリ','担当者','期限','状態','操作'].map(h=>(
+              {['試験','タスク名','カテゴリ','担当者','期限','状態','操作'].map(h=>(
                 <th key={h} style={{ padding:'12px 16px', textAlign:'left', fontWeight:700, color:'#374151', fontSize:12 }}>{h}</th>
               ))}
             </tr>
@@ -603,8 +641,8 @@ function TasksPage({ tasks, trials, onSave }) {
               const isOD = t.status!=='完了' && t.dueDate < today;
               return (
                 <tr key={t.id} style={{ borderBottom:'1px solid #f1f5f9', background:isOD?'#fff5f5':'#fff' }}>
-                  <td style={{ padding:'12px 16px', fontWeight:600, color:'#1e293b' }}>{isOD && <span style={{ marginRight:6, color:'#ef4444' }}>⚠️</span>}{t.title}</td>
                   <td style={{ padding:'12px 16px', color:'#64748b', fontSize:12 }}>{trial?.name||'-'}</td>
+                  <td style={{ padding:'12px 16px', fontWeight:600, color:'#1e293b' }}>{isOD && <span style={{ marginRight:6, color:'#ef4444' }}>⚠️</span>}{t.title}</td>
                   <td style={{ padding:'12px 16px' }}>
                     <span style={{ fontSize:11, fontWeight:700, color:CATEGORY_COLOR[t.category]||'#64748b', background:(CATEGORY_COLOR[t.category]||'#94a3b8')+'18', padding:'3px 8px', borderRadius:4 }}>{t.category}</span>
                   </td>
@@ -735,6 +773,284 @@ function HandoverPage({ trials, knowledges, tasks }) {
   );
 }
 
+// ===== SCHEDULE PAGE (稲葉さん提案: 共有スケジュール) =====
+function SchedulePage({ schedules, onSave, trials }) {
+  const [showForm, setShowForm] = useState(false);
+  const today = new Date().toISOString().slice(0,10);
+  const empty = { title:'', date:'', trialId:'', description:'', author:'' };
+  const [form, setForm] = useState(empty);
+  const upd = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  const sorted = [...schedules].sort((a,b)=>a.date>b.date?1:-1);
+  const upcoming = sorted.filter(s=>s.date>=today);
+  const past = sorted.filter(s=>s.date<today);
+
+  const handleSubmit = e => {
+    e.preventDefault();
+    const newItem = { ...form, id:'SC'+Date.now() };
+    onSave([...schedules, newItem]);
+    setForm(empty);
+    setShowForm(false);
+  };
+
+  const del = id => { if(window.confirm('削除しますか？')) onSave(schedules.filter(s=>s.id!==id)); };
+
+  const monthLabel = date => {
+    if (!date) return '';
+    const d = new Date(date);
+    return `${d.getFullYear()}年${d.getMonth()+1}月`;
+  };
+
+  // Group upcoming by month
+  const groups = {};
+  upcoming.forEach(s => {
+    const m = monthLabel(s.date);
+    if (!groups[m]) groups[m] = [];
+    groups[m].push(s);
+  });
+
+  const dayDiff = date => {
+    const d = new Date(date) - new Date(today);
+    const days = Math.ceil(d / (1000*60*60*24));
+    if (days === 0) return { label:'今日', color:'#dc2626' };
+    if (days < 0) return { label:`${Math.abs(days)}日前`, color:'#94a3b8' };
+    if (days <= 7) return { label:`あと${days}日`, color:'#f97316' };
+    if (days <= 30) return { label:`あと${days}日`, color:'#2563eb' };
+    return { label:`あと${days}日`, color:'#64748b' };
+  };
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+        <div>
+          <h2 style={{ margin:0, fontSize:22, fontWeight:800, color:'#1e293b' }}>共有スケジュール</h2>
+          <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:14 }}>提出期限・会議・マイルストーンの全体共有</p>
+        </div>
+        <Btn onClick={()=>setShowForm(true)}>＋ 予定を追加</Btn>
+      </div>
+
+      {/* Timeline */}
+      {upcoming.length === 0 && <Card style={{ textAlign:'center', padding:48, color:'#94a3b8' }}><div style={{ fontSize:36, marginBottom:12 }}>📅</div><p>予定がまだ登録されていません</p></Card>}
+
+      {Object.entries(groups).map(([month, items]) => (
+        <div key={month} style={{ marginBottom:24 }}>
+          <div style={{ fontSize:13, fontWeight:800, color:'#1e293b', marginBottom:12, display:'flex', alignItems:'center', gap:8 }}>
+            <span style={{ width:8, height:8, borderRadius:'50%', background:'#3b82f6', display:'inline-block' }} />
+            {month}
+          </div>
+          <div style={{ display:'grid', gap:10 }}>
+            {items.map(s => {
+              const trial = trials.find(t=>t.id===s.trialId);
+              const dd = dayDiff(s.date);
+              return (
+                <div key={s.id} style={{ background:'#fff', borderRadius:10, padding:16, border:'1px solid #e2e8f0', display:'flex', gap:16, alignItems:'flex-start', boxShadow:'0 1px 3px rgba(0,0,0,0.04)' }}>
+                  <div style={{ minWidth:56, textAlign:'center', background:'#f8fafc', borderRadius:8, padding:'8px 0', border:'1px solid #e2e8f0' }}>
+                    <div style={{ fontSize:11, color:'#64748b', fontWeight:600 }}>{s.date.slice(5,7)}/{s.date.slice(8,10)}</div>
+                    <div style={{ fontSize:9, color:'#94a3b8', marginTop:2 }}>{['日','月','火','水','木','金','土'][new Date(s.date).getDay()]}</div>
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap', marginBottom:4 }}>
+                      <span style={{ fontWeight:700, fontSize:14, color:'#1e293b' }}>{s.title}</span>
+                      <span style={{ fontSize:11, fontWeight:700, color:dd.color, background:dd.color+'18', padding:'2px 8px', borderRadius:10 }}>{dd.label}</span>
+                    </div>
+                    {s.description && <p style={{ margin:'0 0 4px', fontSize:12, color:'#64748b', lineHeight:1.6 }}>{s.description}</p>}
+                    <div style={{ display:'flex', gap:10, fontSize:11, color:'#94a3b8' }}>
+                      {trial && <span>🔬 {trial.name}</span>}
+                      {s.author && <span>👤 {s.author}</span>}
+                    </div>
+                  </div>
+                  <button onClick={()=>del(s.id)} style={{ background:'none', border:'none', cursor:'pointer', color:'#94a3b8', fontSize:16, padding:4 }}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {past.length > 0 && (
+        <details style={{ marginTop:20 }}>
+          <summary style={{ cursor:'pointer', fontSize:13, color:'#94a3b8', fontWeight:600, marginBottom:10 }}>📂 過去の予定 ({past.length}件)</summary>
+          <div style={{ display:'grid', gap:8, marginTop:10, opacity:0.6 }}>
+            {past.map(s=>(
+              <div key={s.id} style={{ background:'#f8fafc', borderRadius:8, padding:'10px 14px', border:'1px solid #e2e8f0', display:'flex', alignItems:'center', gap:12 }}>
+                <span style={{ fontSize:12, color:'#94a3b8', minWidth:60 }}>{s.date}</span>
+                <span style={{ fontSize:13, color:'#64748b', fontWeight:600 }}>{s.title}</span>
+                <button onClick={()=>del(s.id)} style={{ background:'none', border:'none', cursor:'pointer', color:'#cbd5e1', fontSize:14, marginLeft:'auto' }}>×</button>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {showForm && (
+        <Modal title="予定を追加" onClose={()=>setShowForm(false)}>
+          <form onSubmit={handleSubmit}>
+            <Input label="タイトル" value={form.title} onChange={v=>upd('title',v)} required placeholder="例: IRB申請書類提出期限" />
+            <Input label="日付" type="date" value={form.date} onChange={v=>upd('date',v)} required />
+            <div style={{ marginBottom:14 }}>
+              <label style={{ display:'block', fontSize:13, fontWeight:600, color:'#374151', marginBottom:4 }}>関連試験（任意）</label>
+              <select value={form.trialId} onChange={e=>upd('trialId',e.target.value)} style={{ width:'100%', padding:'8px 12px', borderRadius:8, border:'1px solid #d1d5db', fontSize:14 }}>
+                <option value="">試験を選択（全体の予定の場合は空欄）</option>
+                {trials.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </div>
+            <Textarea label="詳細・メモ（任意）" value={form.description} onChange={v=>upd('description',v)} rows={3} placeholder="例: ○月○日までに倫理委員会に提出" />
+            <Input label="追加者" value={form.author} onChange={v=>upd('author',v)} placeholder="お名前" />
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+              <Btn variant="secondary" onClick={()=>setShowForm(false)}>キャンセル</Btn>
+              <Btn type="submit">追加</Btn>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ===== MEMBER STATUS PAGE (稲葉さん提案: 業務状況) =====
+function MemberStatusPage({ tasks, trials, memberStatuses, onSaveMemberStatuses }) {
+  const today = new Date().toISOString().slice(0,10);
+  const [showForm, setShowForm] = useState(false);
+  const [editTarget, setEditTarget] = useState(null);
+  const empty = { name:'', location:'出社', currentWork:'', note:'' };
+  const [form, setForm] = useState(empty);
+  const upd = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  // Gather unique assignees from tasks
+  const allAssignees = [...new Set(tasks.map(t=>t.assignee).filter(Boolean))];
+
+  const getTasksFor = name => tasks.filter(t=>t.assignee===name && t.status!=='完了');
+  const getOverdueFor = name => tasks.filter(t=>t.assignee===name && t.status!=='完了' && t.dueDate<today);
+
+  const locationColors = {
+    '出社':    { bg:'#dcfce7', text:'#166534' },
+    '在宅':    { bg:'#dbeafe', text:'#1d4ed8' },
+    '出張':    { bg:'#fff7ed', text:'#c2410c' },
+    '休暇':    { bg:'#fef9c3', text:'#854d0e' },
+    '不明':    { bg:'#f1f5f9', text:'#64748b' },
+  };
+
+  const openEdit = ms => { setForm({...ms}); setEditTarget(ms); setShowForm(true); };
+  const openAdd  = () => { setForm(empty); setEditTarget(null); setShowForm(true); };
+
+  const handleSubmit = e => {
+    e.preventDefault();
+    let updated;
+    if (editTarget) updated = memberStatuses.map(m=>m.name===editTarget.name ? {...form} : m);
+    else updated = [...memberStatuses, { ...form }];
+    onSaveMemberStatuses(updated);
+    setShowForm(false);
+  };
+
+  const del = name => { if(window.confirm('削除しますか？')) onSaveMemberStatuses(memberStatuses.filter(m=>m.name!==name)); };
+
+  // Merge registered statuses with task-derived members
+  const statusMap = {};
+  memberStatuses.forEach(m => statusMap[m.name] = m);
+
+  // All names: union of registered + task assignees
+  const allNames = [...new Set([...memberStatuses.map(m=>m.name), ...allAssignees])];
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+        <div>
+          <h2 style={{ margin:0, fontSize:22, fontWeight:800, color:'#1e293b' }}>メンバー業務状況</h2>
+          <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:14 }}>在宅勤務を含むチームの現在の業務状況・担当タスク一覧</p>
+        </div>
+        <Btn onClick={openAdd}>＋ メンバー追加・更新</Btn>
+      </div>
+
+      {allNames.length === 0 && (
+        <Card style={{ textAlign:'center', padding:48 }}>
+          <div style={{ fontSize:36, marginBottom:12 }}>👥</div>
+          <p style={{ color:'#94a3b8', fontSize:14 }}>メンバーがまだ登録されていません。<br/>「メンバー追加」またはタスクに担当者を設定すると表示されます。</p>
+        </Card>
+      )}
+
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(340px,1fr))', gap:16 }}>
+        {allNames.map(name => {
+          const ms = statusMap[name];
+          const myTasks = getTasksFor(name);
+          const myOverdue = getOverdueFor(name);
+          const loc = ms?.location || '不明';
+          const locStyle = locationColors[loc] || locationColors['不明'];
+          return (
+            <div key={name} style={{ background:'#fff', borderRadius:12, border:'1px solid #e2e8f0', overflow:'hidden', boxShadow:'0 1px 4px rgba(0,0,0,0.05)' }}>
+              <div style={{ padding:'14px 18px', background:'#f8fafc', borderBottom:'1px solid #e2e8f0', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <div style={{ width:38, height:38, borderRadius:'50%', background:'#1e293b', display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, color:'#fff', fontWeight:700 }}>
+                    {name.slice(0,1)}
+                  </div>
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:14, color:'#1e293b' }}>{name}</div>
+                    <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:6, ...locStyle }}>{loc}</span>
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:6 }}>
+                  {ms && <Btn onClick={()=>openEdit(ms)} variant="secondary" small>編集</Btn>}
+                  {ms && <button onClick={()=>del(name)} style={{ background:'none', border:'none', cursor:'pointer', color:'#94a3b8', fontSize:16 }}>×</button>}
+                </div>
+              </div>
+              <div style={{ padding:'14px 18px' }}>
+                {ms?.currentWork && (
+                  <div style={{ marginBottom:12, padding:'10px 12px', background:'#f0f9ff', borderRadius:8, borderLeft:'3px solid #3b82f6' }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:'#0369a1', marginBottom:3 }}>現在の業務</div>
+                    <div style={{ fontSize:13, color:'#1e293b', lineHeight:1.6 }}>{ms.currentWork}</div>
+                  </div>
+                )}
+                {ms?.note && (
+                  <div style={{ marginBottom:12, fontSize:12, color:'#64748b', lineHeight:1.6, background:'#fefce8', padding:'8px 12px', borderRadius:6 }}>
+                    💬 {ms.note}
+                  </div>
+                )}
+                <div style={{ fontSize:12, fontWeight:700, color:'#374151', marginBottom:8, display:'flex', alignItems:'center', gap:6 }}>
+                  担当タスク
+                  <span style={{ background:'#f1f5f9', color:'#64748b', borderRadius:10, padding:'1px 8px', fontSize:11 }}>{myTasks.length}件</span>
+                  {myOverdue.length>0 && <span style={{ background:'#fee2e2', color:'#dc2626', borderRadius:10, padding:'1px 8px', fontSize:11 }}>⚠️期限超過{myOverdue.length}件</span>}
+                </div>
+                {myTasks.length === 0
+                  ? <p style={{ fontSize:12, color:'#94a3b8' }}>未完了タスクはありません</p>
+                  : myTasks.slice(0,4).map(t => {
+                      const trial = trials.find(tr=>tr.id===t.trialId);
+                      const isOD = t.dueDate < today;
+                      return (
+                        <div key={t.id} style={{ display:'flex', gap:8, marginBottom:6, padding:'7px 10px', borderRadius:6, background:isOD?'#fff5f5':'#f8fafc', border:`1px solid ${isOD?'#fecaca':'#e2e8f0'}` }}>
+                          <div style={{ width:3, borderRadius:2, background:CATEGORY_COLOR[t.category]||'#94a3b8', flexShrink:0 }} />
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontSize:12, fontWeight:600, color:'#1e293b' }}>{isOD && '⚠️'}{t.title}</div>
+                            <div style={{ fontSize:10, color:'#94a3b8', marginTop:2 }}>{trial?.name||'-'} · 期限: {t.dueDate}</div>
+                          </div>
+                          <span style={{ ...TASK_STATUS_COLOR[t.status], padding:'1px 6px', borderRadius:4, fontSize:10, fontWeight:700, flexShrink:0 }}>{t.status}</span>
+                        </div>
+                      );
+                    })
+                }
+                {myTasks.length > 4 && <div style={{ fontSize:11, color:'#94a3b8', textAlign:'center', marginTop:6 }}>他 {myTasks.length-4} 件...</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {showForm && (
+        <Modal title={editTarget?'業務状況を更新':'メンバーを追加'} onClose={()=>setShowForm(false)}>
+          <form onSubmit={handleSubmit}>
+            <Input label="名前" value={form.name} onChange={v=>upd('name',v)} required placeholder="例: 稲葉咲子" disabled={!!editTarget} />
+            <Select label="勤務場所" value={form.location} onChange={v=>upd('location',v)} options={['出社','在宅','出張','休暇','不明']} />
+            <Textarea label="現在の業務内容" value={form.currentWork} onChange={v=>upd('currentWork',v)} rows={3} placeholder="例: A試験のEDCデータ確認、B試験モニタリング報告書作成中" />
+            <Textarea label="メモ・連絡事項" value={form.note} onChange={v=>upd('note',v)} rows={2} placeholder="例: 午後から会議のため応答遅れます" />
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+              <Btn variant="secondary" onClick={()=>setShowForm(false)}>キャンセル</Btn>
+              <Btn type="submit">{editTarget?'更新':'追加'}</Btn>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 // ===== MAIN APP =====
 function App() {
   const [gasUrl, setGasUrl] = useState(() => localStorage.getItem(GAS_URL_KEY)||'');
@@ -742,6 +1058,8 @@ function App() {
   const [trials, setTrials] = useState([]);
   const [knowledges, setKnowledges] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [schedules, setSchedules] = useState([]);
+  const [memberStatuses, setMemberStatuses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState(null);
@@ -756,6 +1074,8 @@ function App() {
       setTrials(data.trials||[]);
       setKnowledges(data.knowledge||[]);
       setTasks(data.tasks||[]);
+      setSchedules(data.schedules||[]);
+      setMemberStatuses(data.memberStatuses||[]);
       setLastSaved(new Date().toLocaleTimeString('ja-JP'));
     } catch(e) {
       showToast('データの読み込みに失敗しました: '+e.message, 'error');
@@ -797,6 +1117,24 @@ function App() {
     } catch(e) { showToast('保存失敗: '+e.message, 'error'); }
     setSaving(false);
   };
+  const saveSchedules = async (updated) => {
+    setSchedules(updated);
+    setSaving(true);
+    try {
+      await apiPost(gasUrl, 'saveSchedules', updated);
+      showToast('スケジュールを保存しました');
+    } catch(e) { showToast('保存失敗: '+e.message, 'error'); }
+    setSaving(false);
+  };
+  const saveMemberStatuses = async (updated) => {
+    setMemberStatuses(updated);
+    setSaving(true);
+    try {
+      await apiPost(gasUrl, 'saveMemberStatuses', updated);
+      showToast('業務状況を保存しました');
+    } catch(e) { showToast('保存失敗: '+e.message, 'error'); }
+    setSaving(false);
+  };
 
   if (!gasUrl) return <SetupPage onSave={handleSaveGasUrl} />;
 
@@ -805,6 +1143,8 @@ function App() {
     { id:'trials',    icon:'🔬', label:'試験管理' },
     { id:'knowledge', icon:'📚', label:'ナレッジベース' },
     { id:'tasks',     icon:'✅', label:'タスク管理' },
+    { id:'schedule',  icon:'📅', label:'共有スケジュール' },
+    { id:'members',   icon:'👥', label:'業務状況' },
     { id:'handover',  icon:'🤝', label:'引き継ぎシート' },
   ];
 
@@ -857,10 +1197,12 @@ function App() {
           </div>
         ) : (
           <>
-            {page==='dashboard'  && <Dashboard   trials={trials} tasks={tasks} knowledges={knowledges} />}
+            {page==='dashboard'  && <Dashboard   trials={trials} tasks={tasks} knowledges={knowledges} schedules={schedules} />}
             {page==='trials'     && <TrialsPage   trials={trials} onSave={saveTrials} />}
             {page==='knowledge'  && <KnowledgePage knowledges={knowledges} trials={trials} onSave={saveKnowledge} />}
             {page==='tasks'      && <TasksPage    tasks={tasks} trials={trials} onSave={saveTasks} />}
+            {page==='schedule'   && <SchedulePage schedules={schedules} onSave={saveSchedules} trials={trials} />}
+            {page==='members'    && <MemberStatusPage tasks={tasks} trials={trials} memberStatuses={memberStatuses} onSaveMemberStatuses={saveMemberStatuses} />}
             {page==='handover'   && <HandoverPage trials={trials} knowledges={knowledges} tasks={tasks} />}
           </>
         )}
